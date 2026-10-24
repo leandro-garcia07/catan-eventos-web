@@ -12,18 +12,12 @@ class RecorderProcessor extends AudioWorkletProcessor {
         defaultValue: 48000,
         minValue: 8000,
         maxValue: 96000
-      },
-      {
-        name: 'streamBufferSize',
-        defaultValue: 2048,
-        minValue: 256,
-        maxValue: 8192
       }
     ];
   }
 
   // Buffer size compromise between size and process call frequency
-  _bufferSize = 2048
+  _bufferSize = 4096
   // The current buffer fill level
   _bytesWritten = 0
   // Buffer per channel
@@ -39,7 +33,6 @@ class RecorderProcessor extends AudioWorkletProcessor {
 
     this._numChannels = options.parameterData.numChannels
     this._sampleRate = options.parameterData.sampleRate
-    this._bufferSize = options.parameterData.streamBufferSize
 
     // Resampler(current context sample rate, desired sample rate, num channels, buffer size)
     // num channels is always 1 since we resample after interleaving channels
@@ -90,7 +83,7 @@ class RecorderProcessor extends AudioWorkletProcessor {
     for (let channel = 0; channel < this._numChannels; channel++) {
       // Push a copy of the array.
       // The underlying implementation may reuse it which will break the recording.
-      this._buffers[channel].push([...input[channel % input.length]])
+      this._buffers[channel].push([...input[channel]])
     }
 
     this._bytesWritten += input[0].length
@@ -101,7 +94,7 @@ class RecorderProcessor extends AudioWorkletProcessor {
   flush() {
     let channels = []
     for (let channel = 0; channel < this._numChannels; channel++) {
-      channels.push(this.mergeFloat32Arrays(this._buffers[channel]))
+      channels.push(this.mergeFloat32Arrays(this._buffers[channel], this._bytesWritten))
     }
 
     let interleaved = this.interleave(channels)
@@ -113,14 +106,8 @@ class RecorderProcessor extends AudioWorkletProcessor {
     this.initBuffers()
   }
 
-  mergeFloat32Arrays(arrays) {
-    // Calculate the actual total length from the arrays
-    let actualLength = 0
-    for (let i = 0; i < arrays.length; i++) {
-      actualLength += arrays[i].length
-    }
-    
-    let result = new Float32Array(actualLength)
+  mergeFloat32Arrays(arrays, bytesWritten) {
+    let result = new Float32Array(bytesWritten)
     var offset = 0
 
     for (let i = 0; i < arrays.length; i++) {
@@ -133,7 +120,7 @@ class RecorderProcessor extends AudioWorkletProcessor {
 
   // Interleave data from channels from LLLLRRRR to LRLRLRLR
   interleave(channels) {
-    if (channels.length === 1) {
+    if (channels === 1) {
       return channels[0]
     }
 
@@ -146,9 +133,8 @@ class RecorderProcessor extends AudioWorkletProcessor {
 
     var index = 0
     var inputIndex = 0
-    var minChannelLength = Math.min(...channels.map(c => c.length))
 
-    while (index < length && inputIndex < minChannelLength) {
+    while (index < length) {
       for (let i = 0; i < channels.length; i++) {
         result[index] = channels[i][inputIndex]
         index++
@@ -245,7 +231,6 @@ class Resampler {
     try {
       this.outputBuffer = new Float32Array(this.outputBufferSize);
       this.lastOutput = new Float32Array(this.channels);
-      this.lastOutput.fill(0); // Initialize to zeros to prevent artifacts
     }
     catch (error) {
       this.outputBuffer = [];
@@ -396,6 +381,18 @@ class Resampler {
   }
 
   resample(buffer) {
+    if (this.fromSampleRate == this.toSampleRate) {
+      this.ratioWeight = 1;
+    } else {
+      if (this.fromSampleRate < this.toSampleRate) {
+        this.lastWeight = 1;
+      } else {
+        this.tailExists = false;
+        this.lastWeight = 0;
+      }
+      this.initializeBuffers();
+      this.ratioWeight = this.fromSampleRate / this.toSampleRate;
+    }
     return this.resampler(buffer)
   }
 }
